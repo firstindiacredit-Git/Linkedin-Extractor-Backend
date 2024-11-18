@@ -14,7 +14,7 @@ app.listen(port, () => {
 });
 
 app.post("/scrape", async (req, res) => {
-  const { industry, country, pages } = req.body;
+  const { industry, country, pages, start = 0, limit = 20 } = req.body;
 
   if (!industry || !country || !pages) {
     return res.status(400).send({ error: "Missing parameters" });
@@ -22,14 +22,7 @@ app.post("/scrape", async (req, res) => {
 
   let chromeOptions = new chrome.Options();
   chromeOptions.addArguments("--headless");
-  chromeOptions.addArguments("--dns-prefetch-disable");
-  chromeOptions.addArguments('--proxy-server="direct://"');
-  chromeOptions.addArguments("--proxy-bypass-list=*");
-  chromeOptions.addArguments("--start-maximized");
   chromeOptions.addArguments("--disable-blink-features=AutomationControlled");
-  chromeOptions.addArguments(
-    "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-  );
 
   let driver = await new Builder()
     .forBrowser("chrome")
@@ -42,93 +35,63 @@ app.post("/scrape", async (req, res) => {
     const maxPages = parseInt(pages, 10);
     let processedUrls = new Set();
 
-    // Initial search
     await driver.get(
       `https://www.google.com/search?q=site:linkedin.com/in+${encodeURIComponent(
         industry
-      )}+${encodeURIComponent(country)}&num=10`
+      )}+${encodeURIComponent(country)}&num=20`
     );
 
-    while (currentPage <= maxPages) {
-      console.log(`Scraping page ${currentPage}`);
-
-      // Wait for results to load
+    while (currentPage <= maxPages && profiles.length < start + limit) {
       await driver.wait(until.elementLocated(By.css("div#search")), 10000);
 
-      // Add random delay to mimic human behavior
-      await new Promise((resolve) =>
-        setTimeout(resolve, 1000 + Math.random() * 2000)
-      );
-
-      // Extract profile links
       const profileElements = await driver.findElements(By.css("div.g"));
 
       for (let element of profileElements) {
+        if (profiles.length >= start + limit) break;
+
+        const linkElement = await element.findElement(By.css("a"));
+        const profileLink = await linkElement.getAttribute("href");
+
+        if (processedUrls.has(profileLink)) continue;
+        processedUrls.add(profileLink);
+
+        const profileNameElement = await element.findElement(By.css("h3"));
+        const profileName = await profileNameElement.getText();
+
+        let profileAddress = "No address found";
         try {
-          const linkElement = await element.findElement(By.css("a"));
-          const profileLink = await linkElement.getAttribute("href");
+          const descriptionElement = await element.findElement(
+            By.css("div.VwiC3b")
+          );
+          profileAddress = await descriptionElement.getText();
+        } catch (e) {}
 
-          // Skip if we've already processed this URL
-          if (processedUrls.has(profileLink)) continue;
-          processedUrls.add(profileLink);
-
-          // Extract profile name
-          const profileNameElement = await element.findElement(By.css("h3"));
-          const profileName = await profileNameElement.getText();
-
-          // Extract description/address
-          let profileAddress = "No address found";
-          try {
-            const descriptionElement = await element.findElement(
-              By.css("div.VwiC3b")
-            );
-            profileAddress = await descriptionElement.getText();
-          } catch (e) {
-            // Description element not found, continue with default value
-          }
-
-          if (profileLink.includes("linkedin.com/in/")) {
-            profiles.push({
-              name: profileName,
-              link: profileLink,
-              address: profileAddress,
-            });
-          }
-        } catch (e) {
-          console.error("Error extracting profile data:", e);
+        if (profileLink.includes("linkedin.com/in/")) {
+          profiles.push({
+            name: profileName,
+            link: profileLink,
+            address: profileAddress,
+          });
         }
       }
 
-      if (currentPage >= maxPages) break;
+      if (profiles.length >= start + limit || currentPage >= maxPages) break;
 
-      // Find and click the next page button
       try {
         const nextButton = await driver.findElement(By.id("pnnext"));
-        await driver.executeScript(
-          "arguments[0].scrollIntoView(true);",
-          nextButton
-        );
-        await new Promise((resolve) => setTimeout(resolve, 1000));
         await nextButton.click();
         currentPage++;
-
-        // Wait for the new page to load
         await driver.wait(until.elementLocated(By.css("div#search")), 10000);
       } catch (e) {
-        console.log("No more pages available or reached the end");
         break;
       }
     }
 
-    // Remove duplicates based on profile link
-    const uniqueProfiles = Array.from(
-      new Map(profiles.map((item) => [item.link, item])).values()
-    );
-
+    const paginatedProfiles = profiles.slice(start, start + limit);
     res.status(200).json({
-      profiles: uniqueProfiles,
-      totalProfiles: uniqueProfiles.length,
-      pagesScraped: currentPage,
+      profiles: paginatedProfiles,
+      totalProfiles: profiles.length,
+      hasMore: profiles.length > start + limit,
     });
   } catch (error) {
     console.error("Error during scraping:", error);
