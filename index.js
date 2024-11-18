@@ -46,7 +46,7 @@ app.post("/scrape", async (req, res) => {
     await driver.get(
       `https://www.google.com/search?q=site:linkedin.com/in+${encodeURIComponent(
         industry
-      )}+${encodeURIComponent(country)}&num=100`
+      )}+${encodeURIComponent(country)}&num=10`
     );
 
     while (currentPage <= maxPages) {
